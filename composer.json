@@ -1,0 +1,19 @@
+{
+    "name": "magloft/ezmagicbundle",
+    "description": "MagLoft EzMagic Setup Bundle for eZ Publish Platform",
+    "license": "GPL-2.0",
+    "authors": [
+        {
+            "name": "Tobias Strebitzer",
+            "homepage": "http://www.magloft.com"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "php": ">=5.3.3"
+    },
+    "autoload": {
+        "psr-0": {"MagLoft\\EzmagicBundle": ""}
+    },
+    "target-dir": "MagLoft/EzmagicBundle"
+}

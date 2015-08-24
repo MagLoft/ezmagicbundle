@@ -1,0 +1,13 @@
+site:
+  tld: dev
+  slug: ezpublish
+database:
+  implementation: ezmysqli
+  host: 127.0.0.1
+  port: 3306
+  username: root
+  password: root
+  name: ezpublish
+  slug: ezpublish
+  secret: NotSoSecret
+  ssh_host: ezmagic@git.myserver.com
