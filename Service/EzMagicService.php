@@ -112,14 +112,14 @@ class EzMagicService {
 
         // Security test to avoid unconsious override of published storage
         $this->info('Warning: Exporting the storage will override your currently stored storage.', true);
-        $confirmation = $this->ask("Type '{$config["ezmagic_slug"]}' to publish the storage directory to fsmagic", false);
+        $confirmation = $this->ask("Type '{$config["ezmagic_slug"]}' to PUBLISH the storage directory TO fsmagic", false);
         if($confirmation !== $config["ezmagic_slug"]) {
             $this->info('Aborting export...', true);
             die();
         }
 
         // Upload storage directory
-        if($this->execute("gsutil -m rsync -d ezpublish_legacy/var/storage/ gs://{$config["ezmagic_bucket"]}/fsmagic/{$config["ezmagic_slug"]}/") === false) {
+        if($this->execute("gsutil -m rsync -d -r ezpublish_legacy/var/storage/ gs://{$config["ezmagic_bucket"]}/fsmagic/{$config["ezmagic_slug"]}/") === false) {
             $this->info('Aborting fsmagic export...');
             die();
         }
@@ -130,12 +130,19 @@ class EzMagicService {
     }
 
     public function storageMagicImport() {
-
         $this->info('Importing ezpublish storage via rsync');
+        $config = $this->getConfig();
+
+        // Security test to avoid unconsious override of published storage
+        $this->info('Warning: Importing the storage will override your current local storage.', true);
+        $confirmation = $this->ask("Type '{$config["ezmagic_slug"]}' to IMPORT the storage directory FROM fsmagic", false);
+        if($confirmation !== $config["ezmagic_slug"]) {
+            $this->info('Aborting export...', true);
+            die();
+        }
 
         // Download storage directory
-        $dbConfig = $this->getConfig('database');
-        if(($this->execute("rsync -avz --progress -e 'ssh' {$dbConfig["ssh_host"]}:~/fsmagic/{$dbConfig["slug"]}/ ezpublish_legacy/var/storage/")) === false) {
+        if($this->execute("gsutil -m rsync -d -r gs://{$config["ezmagic_bucket"]}/fsmagic/{$config["ezmagic_slug"]}/ ezpublish_legacy/var/storage/") === false) {
             $this->info('Aborting fsmagic import...');
             die();
         }
