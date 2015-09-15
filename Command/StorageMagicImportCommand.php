@@ -19,7 +19,9 @@ class StorageMagicImportCommand extends ContainerAwareCommand {
 
     protected function execute( InputInterface $input, OutputInterface $output ) {
         $io = new ConsoleIO($input, $output, $this->getHelperSet());
-        $ezMagicService = new EzMagicService($io);        
+        $container = $this->getContainer();
+        $ezMagicService = new EzMagicService($io, $container);
+        $ezMagicService->validate();
         $ezMagicService->storageMagicImport();
     }
 

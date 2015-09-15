@@ -10,28 +10,22 @@ class ScriptHandler {
     protected static $ezConfig;
     public static $io;
 
-    public static function setupEzConfig(Event $event) {
+    public static function setupEzMagic(Event $event) {
         $io = $event->getIO();
-        $ezMagicService = new EzMagicService($io);        
-        $ezMagicService->setupEzConfig();
-    }
-
-    public static function setupDatabase(Event $event) {
-        $io = $event->getIO();
-        $ezMagicService = new EzMagicService($io);        
+        $container = self::getContainer($event);
+        $ezMagicService = new EzMagicService($io, $container);
+        $ezMagicService->validate();
         $ezMagicService->setupDatabase();
-    }
-    
-    public static function checkDatabase(Event $event) {
-        $io = $event->getIO();
-        $ezMagicService = new EzMagicService($io);        
         $ezMagicService->checkDatabase();
     }
-    
-    public static function dbMagicExport(Event $event) {
-        $io = $event->getIO();
-        $ezMagicService = new EzMagicService($io);        
-        $ezMagicService->dbMagicExport();
+
+    public static function getContainer(Event $event) {
+        $extra = $event->getComposer()->getPackage()->getExtra();
+        $kernelrootdir = rtrim(getcwd(), '/') . '/' . trim($extra['symfony-app-dir'], '/');
+        require_once "$kernelrootdir/EzPublishKernel.php";
+        $kernel = new \EzPublishKernel("dev", FALSE);
+        $kernel->boot();
+        return $kernel->getContainer();
     }
-    
+
 }

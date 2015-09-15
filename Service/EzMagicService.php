@@ -7,178 +7,45 @@
  *
  *  COMPOSER SETUP:
  *      "post-install-cmd": [
- *          "MagLoft\\EzmagicBundle\\Composer\\ScriptHandler::setupEzConfig",
- *          "MagLoft\\EzmagicBundle\\Composer\\ScriptHandler::setupDatabase",
- *          "MagLoft\\EzmagicBundle\\Composer\\ScriptHandler::checkDatabase",
+ *          "Incenteev\\ParameterHandler\\ScriptHandler::buildParameters",
+ *          "Sensio\\Bundle\\DistributionBundle\\Composer\\ScriptHandler::buildBootstrap",
+ *          "MagLoft\\EzmagicBundle\\Composer\\ScriptHandler::setupEzMagic",
  *          ...
  *      ]
  */
 
 namespace MagLoft\EzmagicBundle\Service;
 
-use Symfony\Component\Yaml\Parser;
-use Symfony\Component\Yaml\Inline;
-use Symfony\Component\Yaml\Dumper;
-use Symfony\Component\Finder\Finder;
+use Symfony\Component\DependencyInjection\Container;
 use PDO;
 use PDOException;
 
 class EzMagicService {
     protected $io;
+    protected $container;
     protected $config;
     
-    public function __construct($io) {
+    public function __construct($io, Container $container) {
         $this->io = $io;
+        $this->container = $container;
+    }
+    
+    // EzMagic Bootstrap
 
-        // load ezconfig
-        $this->loadEzConfig();
+    public function validate() {
+        $config = $this->getConfig();
 
-    }
-    
-    // MAGIC METHODS
-    
-    public function storageMagicExport() {
-        
-        $this->info('Exporting ezpublish storage via rsync');
-        
-        // Security test to avoid unconsious override of published storage
-        $this->info('Warning: Exporting the storage will override your currently stored storage.', true);
-        $slug = $this->getConfig('database.slug');
-        $confirmation = $this->ask("Type '$slug' to publish the storage directory to fsmagic", false);
-        if($confirmation !== $slug) {
-            $this->info('Aborting export...', true);
+        // Validate configuration
+        if(!$config["ezmagic_slug"]) {
+            $this->error("Missing parameter: ezmagic_slug");
             die();
         }
-        
-        // Upload storage directory
-        $dbConfig = $this->getConfig('database');
-        if(($this->execute("rsync -avz --progress -e 'ssh' ezpublish_legacy/var/storage/ {$dbConfig["ssh_host"]}:~/fsmagic/{$dbConfig["slug"]}/")) === false) {
-            $this->info('Aborting fsmagic export...');
+
+        if(!$config["ezmagic_bucket"]) {
+            $this->error("Missing parameter: ezmagic_bucket");
             die();
         }
-        
-        $this->success('Storage was successfully exported!');
-        
-        return true;
-    }
-    
-    public function storageMagicImport() {
-        
-        $this->info('Importing ezpublish storage via rsync');
-        
-        // Download storage directory
-        $dbConfig = $this->getConfig('database');
-        if(($this->execute("rsync -avz --progress -e 'ssh' {$dbConfig["ssh_host"]}:~/fsmagic/{$dbConfig["slug"]}/ ezpublish_legacy/var/storage/")) === false) {
-            $this->info('Aborting fsmagic import...');
-            die();
-        }
-        
-        $this->success('Storage was successfully imported!');
-        
-        return true;
-    }
-    
-    public function dbMagicExport() {
-        
-        $this->info('Exporting dbmagic database via rsync');
-        
-        // Security test to avoid unconsious override of published database
-        $this->info('Warning: Exporting the Database will override your currently stored database.', true);
-        $slug = $this->getConfig('database.slug');
-        $confirmation = $this->ask("Type '$slug' to publish the database to dbmagic", false);
-        if($confirmation !== $slug) {
-            $this->info('Aborting export...', true);
-            die();
-        }
-            
-        // Check if database exists
-        $dbConfig = $this->getConfig('database');
-        $db = $this->getDatabaseHandle();
-        if($db instanceof PDOException) {
-            $this->error("Could not export database '{$dbConfig['name']}':");
-            $this->error($db->getMessage());
-            $this->info('Aborting export...', true);
-            die();
-        }
-        
-        // Dump database to temporary file
-        if(($mysqlDumpContents = $this->execute("mysqldump -h {$dbConfig["host"]} -u {$dbConfig["username"]} --password='{$dbConfig["password"]}' {$dbConfig["name"]}")) === false) {
-            $this->info('Aborting dbmagic export...');
-            die();
-        }else{
-            file_put_contents("/tmp/{$dbConfig["slug"]}.sql", $mysqlDumpContents);
-        }
-        
-        // Zip database dump
-        if($this->execute("gzip -f /tmp/{$dbConfig["slug"]}.sql") === false) {
-            $this->info('Aborting dbmagic export...');
-            die();
-        }
-        
-        // Encrypt database dump
-        $command = "echo {$dbConfig["secret"]} | gpg --yes --output /tmp/{$dbConfig["slug"]}.sql.gz.enc --batch --passphrase-fd 0 -c --cipher-algo TWOFISH /tmp/{$dbConfig["slug"]}.sql.gz";
-        if($this->execute($command) === false) {
-            $this->info('Aborting dbmagic export...');
-            die();
-        }
-        
-        // Upload server dump
-        if(($this->execute("rsync -avz --progress -e 'ssh' /tmp/{$dbConfig["slug"]}.sql.gz.enc {$dbConfig["ssh_host"]}:~/dbmagic/{$dbConfig["slug"]}.sql.gz.enc")) === false) {
-            $this->info('Aborting dbmagic export...');
-            die();
-        }
-        
-        // Clean up temporary files
-        $this->execute("rm -f /tmp/{$dbConfig["slug"]}.sql");
-        $this->execute("rm -f /tmp/{$dbConfig["slug"]}.sql.gz");
-        $this->execute("rm -f /tmp/{$dbConfig["slug"]}.sql.gz.enc");
-        
-        $this->success('Database dump was successfully exported!');
-        
-        return true;
-    }
-    
-    public function dbMagicImport() {
-        
-        $this->info('Importing dbmagic database via rsync');
-        $dbConfig = $this->getConfig('database');
-        
-        // Download server dump
-        if($this->execute("rsync -avz --progress -e 'ssh' {$dbConfig["ssh_host"]}:~/dbmagic/{$dbConfig["slug"]}.sql.gz.enc /tmp/{$dbConfig["slug"]}.sql.gz.enc") === false) {
-            $this->info('Aborting dbmagic import...');
-            die();
-        }
-        
-        // Decrypt database dump
-        $command = "echo {$dbConfig["secret"]} | gpg --yes --output /tmp/{$dbConfig["slug"]}.sql.gz --batch --passphrase-fd 0 -d /tmp/{$dbConfig["slug"]}.sql.gz.enc";
-        if($this->execute($command) === false) {
-            $this->info('Aborting dbmagic import...');
-            die();
-        }
-        
-        // Unzip database dump
-        if($this->execute("gunzip -f /tmp/{$dbConfig["slug"]}.sql.gz") === false) {
-            $this->info('Aborting dbmagic import...');
-            die();
-        }
-        
-        // Import server dump
-        if(($this->execute("mysql -h {$dbConfig["host"]} -u {$dbConfig["username"]} --password='{$dbConfig["password"]}' {$dbConfig["name"]} < /tmp/{$dbConfig["slug"]}.sql")) === false) {
-            $this->info('Aborting dbmagic import...');
-            die();
-        }
-        
-        // Clean up unencrypted dumps
-        $this->execute("rm -f /tmp/{$dbConfig["slug"]}.sql");
-        $this->execute("rm -f /tmp/{$dbConfig["slug"]}.sql.gz");
-        
-        $this->success('Database dump was successfully imported!');
-        
-        return true;
-    }
-    
-    public function setupEzConfig() {
-        
+
         // Create necessary folders
         if(!file_exists('ezpublish_legacy/var/storage')) {
             mkdir('ezpublish_legacy/var/storage');
@@ -188,42 +55,10 @@ class EzMagicService {
             mkdir('ezpublish/logs');
             $this->success("Successfully created logs directory!");
         }
-        
-        // Check if ezconfig already exists
-        if(file_exists("ezpublish/config/ezconfig.yml")) {
-            $this->success("Found a valid ezconfig.yml file!");
-            return true;
-        }
-                
-        // Load template config
-        if(file_exists("ezpublish/config/ezconfig.yml.dist")) {
-            $templatePath = "ezpublish/config/ezconfig.yml.dist";
-        }else{
-            $templatePath = __DIR__ . "/../Resources/templates/ezconfig.yml";
-        }
-        $parser = new Parser();
-        $templateYamlArray = $parser->parse(file_get_contents($templatePath));
-        
-        // Ask for site config
-        foreach($templateYamlArray as $section => $config) {
-            $this->info("configuring $section settings:");
-            foreach($config as $key => $defaultValue) {
-                $default = Inline::dump($defaultValue);
-                $value = $this->ask($key, $default);
-                $value = Inline::parse($value);
-                $templateYamlArray[$section][$key] = $value;
-            }
-        }
-        
-        // Write ezconfig file
-        $dumper = new Dumper();
-        $yamlContents = $dumper->dump($templateYamlArray, 7);
-        file_put_contents("ezpublish/config/ezconfig.yml", $yamlContents);
-        
-        // Show success message
-        $this->success('ezpublish/config/ezconfig.yml successfully created!');
     }
-    
+
+    // Database Setup
+
     public function setupDatabase() {
 
         // Loop through database tasks until handle is valid
@@ -232,52 +67,21 @@ class EzMagicService {
             if($this->confirm('Run diagnosis?')) {
                 $this->runDatabaseDiagnosis();
             }else{
-                $this->info('Update your ezpublish/config/ezconfig.yml.');
-                $this->retry();
-                $this->loadEzConfig();
+                $this->info('Update your ezpublish/parameters.yml and try again.');
+                die();
             }
         }
-        
+
         $this->success('Database test successful!');
 
     }
-    
-    private function getDatabaseConfig(){
-        
-        $doctrineConfig = false;
-        
-        // compatibility for pre 2014.03 versions
-        $doctrineConfig = @ $this->getConfig("doctrine.dbal.connections.default");
-        
-        
-        if($doctrineConfig){
-            $databaseConfig = array(
-                'type' => 'mysql',
-                'user' => $doctrineConfig["user"],
-                'password' => $doctrineConfig["password"],
-                'server' => $doctrineConfig["host"],
-                'database_name' => $doctrineConfig["dbname"]
-            );
-        }else{
-            $databaseConfig = array(
-                'type' => 'mysql',
-                'user' => $this->getConfig('database.username'),
-                'password' => $this->getConfig('database.password'),
-                'server' => $this->getConfig('database.host'),
-                'database_name' => $this->getConfig('database.name')
-            );
-        }
-        
-        return $databaseConfig;
-    }
-    
+
     public function checkDatabase() {
-        
-        $config = $this->getDatabaseConfig();        
-        $dsn = "mysql:host={$config['server']};dbname={$config["database_name"]}";
-        
+        $config = $this->getConfig();
+        $dsn = "mysql:host={$config['database_host']};dbname={$config["database_name"]}";
+
         try{
-            $db = new PDO($dsn, $config['user'], $config['password'], array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
+            $db = new PDO($dsn, $config['database_user'], $config['database_password'], array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
             $sql = "SELECT `value` FROM `ezsite_data` WHERE `name` = 'ezpublish-version' LIMIT 1;";
             $statement = $db->prepare($sql);
             $statement->execute();
@@ -293,116 +97,219 @@ class EzMagicService {
                 die();
             }
         }
+    }
 
+    public function storageMagicExport() {
+        $this->info('Exporting ezpublish storage via rsync');
+        $config = $this->getConfig();
+
+        // Security check if directory is empty
+        if (!is_readable("ezpublish_legacy/var/storage/") || count(scandir("ezpublish_legacy/var/storage/")) == 2) {
+            $this->error('Storage directory (ezpublish_legacy/var/storage) is empty');
+            $this->info('Aborting export...', true);
+            die();
+        }
+
+        // Security test to avoid unconsious override of published storage
+        $this->info('Warning: Exporting the storage will override your currently stored storage.', true);
+        $confirmation = $this->ask("Type '{$config["ezmagic_slug"]}' to publish the storage directory to fsmagic", false);
+        if($confirmation !== $config["ezmagic_slug"]) {
+            $this->info('Aborting export...', true);
+            die();
+        }
+
+        // Upload storage directory
+        if($this->execute("gsutil -m rsync -d ezpublish_legacy/var/storage/ gs://{$config["ezmagic_bucket"]}/fsmagic/{$config["ezmagic_slug"]}/") === false) {
+            $this->info('Aborting fsmagic export...');
+            die();
+        }
+
+        $this->success('Storage was successfully exported!');
+
+        return true;
+    }
+
+    public function storageMagicImport() {
+
+        $this->info('Importing ezpublish storage via rsync');
+
+        // Download storage directory
+        $dbConfig = $this->getConfig('database');
+        if(($this->execute("rsync -avz --progress -e 'ssh' {$dbConfig["ssh_host"]}:~/fsmagic/{$dbConfig["slug"]}/ ezpublish_legacy/var/storage/")) === false) {
+            $this->info('Aborting fsmagic import...');
+            die();
+        }
+
+        $this->success('Storage was successfully imported!');
+
+        return true;
+    }
+
+    public function dbMagicExport() {
+        $this->info('Exporting dbmagic database via rsync');
+        $config = $this->getConfig();
+
+        // Security test to avoid unconsious override of published database
+        $this->info('Warning: Exporting the Database will override your currently stored database.', true);
+        $confirmation = $this->ask("Type '{$config["ezmagic_slug"]}' to PUBLISH the database TO dbmagic", false);
+        if($confirmation !== $config["ezmagic_slug"]) {
+            $this->info('Aborting export...', true);
+            die();
+        }
+
+        // Check if database exists
+        $db = $this->getDatabaseHandle();
+        if($db instanceof PDOException) {
+            $this->error("Could not export database '{$config["database_name"]}':");
+            $this->error($db->getMessage());
+            $this->info('Aborting export...', true);
+            die();
+        }
+
+        // Dump database to temporary file
+        if(($mysqlDumpContents = $this->execute("mysqldump -h {$config["database_host"]} -u {$config['database_user']} --password='{$config['database_password']}' {$config["database_name"]}")) === false) {
+            $this->info('Aborting dbmagic export...');
+            die();
+        }else{
+            file_put_contents("/tmp/{$config["ezmagic_slug"]}.sql", $mysqlDumpContents);
+        }
+
+        // Zip database dump
+        if($this->execute("gzip -f /tmp/{$config["ezmagic_slug"]}.sql") === false) {
+            $this->info('Aborting dbmagic export...');
+            die();
+        }
+
+        // Encrypt database dump
+        $command = "echo {$config["secret"]} | gpg --yes --output /tmp/{$config["ezmagic_slug"]}.sql.gz.enc --batch --passphrase-fd 0 -c --cipher-algo TWOFISH /tmp/{$config["ezmagic_slug"]}.sql.gz";
+        if($this->execute($command) === false) {
+            $this->info('Aborting dbmagic export...');
+            die();
+        }
+
+        // Upload server dump
+        if($this->execute("gsutil cp /tmp/{$config["ezmagic_slug"]}.sql.gz.enc gs://{$config["ezmagic_bucket"]}/dbmagic/{$config["ezmagic_slug"]}.sql.gz.enc") === false) {
+            $this->info('Aborting dbmagic export...');
+            die();
+        }
+
+        // Clean up temporary files
+        $this->execute("rm -f /tmp/{$config["ezmagic_slug"]}.sql");
+        $this->execute("rm -f /tmp/{$config["ezmagic_slug"]}.sql.gz");
+        $this->execute("rm -f /tmp/{$config["ezmagic_slug"]}.sql.gz.enc");
+
+        $this->success('Database dump was successfully exported!');
+
+        return true;
+    }
+
+    public function dbMagicImport() {
+
+        $this->info('Importing dbmagic database via rsync');
+        $config = $this->getConfig();
+
+        // Security test to avoid unconsious override of published database
+        $this->info('Warning: Importing the Database will override your local database.', true);
+        $confirmation = $this->ask("Type '{$config["ezmagic_slug"]}' to IMPORT the database FROM dbmagic", false);
+        if($confirmation !== $config["ezmagic_slug"]) {
+            $this->info('Aborting export...', true);
+            die();
+        }
+
+        // Download server dump
+        if($this->execute("gsutil cp gs://{$config["ezmagic_bucket"]}/dbmagic/{$config["ezmagic_slug"]}.sql.gz.enc /tmp/{$config["ezmagic_slug"]}.sql.gz.enc") === false) {
+            $this->info('Aborting dbmagic import...');
+            die();
+        }
+
+        // Decrypt database dump
+        $command = "echo {$config["secret"]} | gpg --yes --output /tmp/{$config["ezmagic_slug"]}.sql.gz --batch --passphrase-fd 0 -d /tmp/{$config["ezmagic_slug"]}.sql.gz.enc";
+        if($this->execute($command) === false) {
+            $this->info('Aborting dbmagic import...');
+            die();
+        }
+
+        // Unzip database dump
+        if($this->execute("gunzip -f /tmp/{$config["ezmagic_slug"]}.sql.gz") === false) {
+            $this->info('Aborting dbmagic import...');
+            die();
+        }
+
+        // Import server dump
+        if(($this->execute("mysql -h {$config["database_host"]} -u {$config["database_user"]} --password='{$config["database_password"]}' {$config["database_name"]} < /tmp/{$config["ezmagic_slug"]}.sql")) === false) {
+            $this->info('Aborting dbmagic import...');
+            die();
+        }
+
+        // Clean up unencrypted dumps
+        $this->execute("rm -f /tmp/{$config["ezmagic_slug"]}.sql");
+        $this->execute("rm -f /tmp/{$config["ezmagic_slug"]}.sql.gz");
+
+        $this->success('Database dump was successfully imported!');
+
+        return true;
     }
     
     // HELPERS
-    
-    protected function getConfig($key=false) {
+
+    private function getConfig() {
         if(!$this->config) {
-            return false;
+            $this->config = array(
+                "secret" => $this->container->getParameter("secret"),
+                "database_driver" => $this->container->getParameter("database_driver"),
+                "database_host" => $this->container->getParameter("database_host"),
+                "database_port" => $this->container->getParameter("database_port"),
+                "database_name" => $this->container->getParameter("database_name"),
+                "database_user" => $this->container->getParameter("database_user"),
+                "database_password" => $this->container->getParameter("database_password"),
+                "ezmagic_slug" => $this->container->getParameter("ezmagic_slug"),
+                "ezmagic_bucket" => $this->container->getParameter("ezmagic_bucket")
+            );
         }
-        if(!$key) {
-            return $this->config;
-        }else{
-            $exploded = explode('.', $key);
-            $config = $this->config;
-            foreach($exploded as $key) {
-                $config = $config[$key];
-            }
-            return $config;
-        }
+        return $this->config;
     }
-    
-    protected function setupConfigFile($file, $replacements, $override=false) {
-        $targetPath = "ezpublish/config/$file";
-        
-        // cancel if file already exists
-        if($override === false && file_exists($targetPath)) {
-            return true;
-        }
-        
-        // read files
-        if(file_exists("$targetPath.dist")) {
-            $sourcePath = "$targetPath.dist";
-        }else{
-            $sourcePath = __DIR__ . "/../Resources/templates/$file.dist";
-        }
-        $parser = new Parser();
-        $config = $parser->parse(file_get_contents($sourcePath));
-        
-        // loop through replacements
-        foreach($replacements as $path => $value) {
-            $exploded = explode('.', $path);
-            $temp = &$config;
-            foreach($exploded as $key) {
-                $temp = &$temp[$key];
-            }
-            $temp = $value;
-            unset($temp);
-        }
-        
-        // write files
-        $dumper = new Dumper();
-        file_put_contents($targetPath, $dumper->dump($config, 7));
-    }
-    
+
     protected function getDatabaseHandle() {
-        
-        $config = $this->getDatabaseConfig();
-        $dsn = "mysql:host={$config['server']};dbname={$config["database_name"]}";
+        $config = $this->getConfig();
+        $dsn = "mysql:host={$config['database_host']};dbname={$config["database_name"]}";
         
         try{
-            $db = new PDO($dsn, $config['user'], $config['password'], array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
+            $db = new PDO($dsn, $config['database_user'], $config['database_password'], array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
             return $db;
         }catch(PDOException $ex){
             return $ex;
         }
     }
     
-    protected function loadEzConfig() {
-        if(file_exists("ezpublish/config/ezconfig.yml")) {
-            $parser = new Parser();
-            $this->config = $parser->parse(file_get_contents("ezpublish/config/ezconfig.yml"));
-            return true;
-        }else{
-            $this->config = null;
-            return false;
-        }
-    }
-    
     protected function createDatabase() {
+        $config = $this->getConfig();
         
         // fetch root credentials
-        $rootUsername = $this->ask('MySQL root user:', $this->getConfig('database.username'));
-        $rootPassword = $this->ask('MySQL root password:', $this->getConfig('database.password'));
-        $username = $this->getConfig('database.username');
-        $password = $this->getConfig('database.password');
-        $database = $this->getConfig('database.name');
-        $host = $this->getConfig('database.host');
-        $port = $this->getConfig('database.port');
+        $rootUser = $this->ask('MySQL root user:', $config["database_user"]);
+        $rootPassword = $this->ask('MySQL root password:', $config["database_password"]);
         
         // connect database
-        $dsn = "mysql:host=$host;port=$port;";
-        $db = new PDO($dsn, $rootUsername, $rootPassword, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
+        $dsn = $this->buildDsn(array( 'host' => $config["database_host"], 'port' => $config["database_port"] ));
+        $db = new PDO($dsn, $rootUser, $rootPassword, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
         
         // execute statements
-        $createSQL = "CREATE DATABASE `$database` DEFAULT CHARACTER SET `utf8`;";
+        $createSQL = "CREATE DATABASE `{$config["database_name"]}` DEFAULT CHARACTER SET `utf8`;";
         $db->exec($createSQL);
-        $grantSQL = "GRANT CREATE ROUTINE, CREATE VIEW, ALTER, SHOW VIEW, CREATE, ALTER ROUTINE, EVENT, INSERT, SELECT, DELETE, TRIGGER, REFERENCES, UPDATE, DROP, EXECUTE, LOCK TABLES, CREATE TEMPORARY TABLES, INDEX ON `$database`.* TO '$username'@'$host'; FLUSH PRIVILEGES;";
+        $grantSQL = "GRANT CREATE ROUTINE, CREATE VIEW, ALTER, SHOW VIEW, CREATE, ALTER ROUTINE, EVENT, INSERT, SELECT, DELETE, TRIGGER, REFERENCES, UPDATE, DROP, EXECUTE, LOCK TABLES, CREATE TEMPORARY TABLES, INDEX ON `{$config["database_name"]}`.* TO '{$config["database_user"]}'@'{$config["database_host"]}'; FLUSH PRIVILEGES;";
         $db->exec($grantSQL);        
     }
     
-    protected function runDatabaseDiagnosis($rootUsername=false, $rootPassword=false) {
-        
+    protected function runDatabaseDiagnosis($rootUser=false, $rootPassword=false) {
+        $config = $this->getConfig();
+
         // fetch root credentials
-        $rootUsername = $rootUsername ? $rootUsername : $this->ask('MySQL root user:', $this->getConfig('database.username'));
-        $rootPassword = $rootPassword ? $rootPassword : $this->ask('MySQL root password:', $this->getConfig('database.password'));
+        $rootUser = $rootUser ? $rootUser : $this->ask('MySQL root user:', $config["database_user"]);
+        $rootPassword = $rootPassword ? $rootPassword : $this->ask('MySQL root password:', $config["database_password"]);
         
         // step one: check root login
-        $dsn = $this->buildDsn(array( 'host' => $this->getConfig('database.host'), 'port' => $this->getConfig('database.port') ));
+        $dsn = $this->buildDsn(array( 'host' => $config["database_host"], 'port' => $config["database_port"] ));
         try{
-            $db = new PDO($dsn, $rootUsername, $rootPassword, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
+            $db = new PDO($dsn, $rootUser, $rootPassword, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
         }catch(PDOException $ex) {
             $this->info('The system was not able to log in to your mysql server. Are you providing root user credentials?');
             $this->error($ex->getMessage());
@@ -412,7 +319,7 @@ class EzMagicService {
         
         // step two: check privileges
         if(!$this->dbUserHasRootPrivileges($db)) {
-            $this->error("The user '$rootUsername' does not have root privileges!");
+            $this->error("The user '$rootUser' does not have root privileges!");
             $this->retry();
             return $this->runDatabaseDiagnosis();
         }else{
@@ -420,64 +327,61 @@ class EzMagicService {
         }
         
         // step three: check is user exists
-        $username = $this->getConfig('database.username');
-        if(!$this->dbUserExists($db, $username)) {
-            $this->error("The user '$username' does not exist!");
+        if(!$this->dbUserExists($db, $config["database_user"], $config["database_host"])) {
+            $this->error("The user '{$config["database_user"]}' does not exist!");
             if($this->confirm('Create user?')) {
-                $this->dbCreateUser($db, $username, $this->getConfig('database.password'));
-                return $this->runDatabaseDiagnosis($rootUsername, $rootPassword);
+                $this->dbCreateUser($db, $config["database_user"], $config["database_password"], $config["database_host"]);
+                return $this->runDatabaseDiagnosis($rootUser, $rootPassword);
             }else{
                 $this->retry();
-                return $this->runDatabaseDiagnosis($rootUsername, $rootPassword);
+                return $this->runDatabaseDiagnosis($rootUser, $rootPassword);
             }
         }else{
-            $this->success("User '$username' exists!");
+            $this->success("User '{$config["database_user"]}' exists!");
         }
         
         // step four: check if database exists
-        $databaseName = $this->getConfig('database.name');
-        if(!$this->dbDatabaseExists($db, $databaseName)) {
-            $this->error("The database '$databaseName' does not exist!");
+        if(!$this->dbDatabaseExists($db, $config["database_name"], $config["database_host"])) {
+            $this->error("The database '{$config["database_name"]}' does not exist!");
             if($this->confirm('Create database?')) {
-                $this->dbCreateDatabase($db, $databaseName);
-                return $this->runDatabaseDiagnosis($rootUsername, $rootPassword);
+                $this->dbCreateDatabase($db, $config["database_name"]);
+                return $this->runDatabaseDiagnosis($rootUser, $rootPassword);
             }else{
                 $this->retry();
-                return $this->runDatabaseDiagnosis($rootUsername, $rootPassword);
+                return $this->runDatabaseDiagnosis($rootUser, $rootPassword);
             }
         }else{
-            $this->success("Database '$databaseName' exists!");
+            $this->success("Database '{$config["database_name"]}' exists!");
         }
         
         // step five: check schema privileges
-        $clientDsn = $this->buildDsn(array( 'host' => $this->getConfig('database.host'), 'port' => $this->getConfig('database.port'), 'dbname' => $this->getConfig('database.name') ));
+        $clientDsn = $this->buildDsn(array( 'host' => $config["database_host"], 'port' => $config["database_port"], 'dbname' => $config["database_name"] ));
         try {
-            $clientDb = new PDO($clientDsn, $this->getConfig('database.username'), $this->getConfig('database.password'));
-            $this->success("User '$username' has privileges to access database '$databaseName'!");
+            new PDO($clientDsn, $config["database_user"], $config["database_password"]);
+            $this->success("User '{$config["database_user"]}' has privileges to access database '{$config["database_name"]}'!");
         }catch(PDOException $ex){
             // check for access denied error
             if($ex->getCode() == 1044) {
-                $this->error("The user '$username' does not have privileges to access the database '$databaseName'!");
+                $this->error("The user '{$config["database_user"]}' does not have privileges to access the database '{$config["database_name"]}'!");
                 if($this->confirm('Create privileges?')) {
-                    $this->dbCreatePrivileges($db, $username, $databaseName);
-                    return $this->runDatabaseDiagnosis($rootUsername, $rootPassword);
+                    $this->dbCreatePrivileges($db, $config["database_user"], $config["database_name"], $config["database_host"]);
+                    return $this->runDatabaseDiagnosis($rootUser, $rootPassword);
                 }else{
                     $this->retry();
-                    return $this->runDatabaseDiagnosis($rootUsername, $rootPassword);
+                    return $this->runDatabaseDiagnosis($rootUser, $rootPassword);
                 }
             }else{
                 $this->error('An unexpected error occured:');
                 $this->error($ex->getMessage());
                 $this->retry();
-                return $this->runDatabaseDiagnosis($rootUsername, $rootPassword);
+                return $this->runDatabaseDiagnosis($rootUser, $rootPassword);
             }
         }
         
         return true;
     }
     
-    protected function dbCreatePrivileges($db, $username, $databaseName) {
-        $host = $this->getConfig('database.host');
+    protected function dbCreatePrivileges($db, $username, $databaseName, $host) {
         $db->exec("GRANT CREATE ROUTINE, CREATE VIEW, ALTER, SHOW VIEW, CREATE, ALTER ROUTINE, EVENT, INSERT, SELECT, DELETE, TRIGGER, REFERENCES, UPDATE, DROP, EXECUTE, LOCK TABLES, CREATE TEMPORARY TABLES, INDEX ON `$databaseName`.* TO '$username'@'$host'; FLUSH PRIVILEGES;");
     }
 
@@ -485,16 +389,14 @@ class EzMagicService {
         $db->exec("CREATE DATABASE `$databaseName` DEFAULT CHARACTER SET `utf8`;");
     }
     
-    protected function dbDatabaseExists($db, $databaseName) {
-        $host = $this->getConfig('database.host');
+    protected function dbDatabaseExists($db, $databaseName, $host) {
         $statement = $db->prepare("SELECT COUNT(*) AS count FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '$databaseName';");
         $statement->execute();
         $count = (int) $statement->fetch(PDO::FETCH_COLUMN, 0);
         return $count > 0;
     }
     
-    protected function dbCreateUser($db, $username, $password) {
-        $host = $this->getConfig('database.host');
+    protected function dbCreateUser($db, $username, $password, $host) {
         $statement = $db->prepare("CREATE USER '$username'@'$host' IDENTIFIED BY '$password';");
         $statement->execute();
     }
@@ -511,8 +413,7 @@ class EzMagicService {
         return false;
     }
     
-    protected function dbUserExists($db, $username) {
-        $host = $this->getConfig('database.host');
+    protected function dbUserExists($db, $username, $host) {
         $statement = $db->prepare("SELECT COUNT(*) AS count FROM mysql.user WHERE User = '$username' AND Host = '$host';");
         $statement->execute();
         $count = (int) $statement->fetch(PDO::FETCH_COLUMN, 0);
@@ -535,7 +436,6 @@ class EzMagicService {
         }else{
             return $this->io->ask(sprintf(' 🔶  <comment>%s</comment>: ', $question, $default), $default);
         }
-        
     }
     
     protected function confirm($question, $default=true) {
